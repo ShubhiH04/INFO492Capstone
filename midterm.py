@@ -395,8 +395,6 @@ filtered_HealthLLM['confidence_label'] = filtered_HealthLLM.apply(assign_confide
 
 # Compute pathos rate
 filtered_HealthLLM["pathos_rate"] = filtered_HealthLLM["pathos_count"] / filtered_HealthLLM["word_count"].clip(lower=1)
-# Compute persuasion score
-filtered_HealthLLM["persuasion_score"] = filtered_HealthLLM.apply(compute_persuasion_score, axis=1)
 
 def compute_persuasion_score(row, weights=None):
     if weights is None:
@@ -416,6 +414,9 @@ def compute_persuasion_score(row, weights=None):
 
     return max(0, min(1, round(persuasion_score, 3)))
 
+# Compute persuasion score
+filtered_HealthLLM["persuasion_score"] = filtered_HealthLLM.apply(compute_persuasion_score, axis=1)
+
 # Use percentiles instead of fixed numbers
 low = filtered_HealthLLM["persuasion_score"].quantile(0.33)
 high = filtered_HealthLLM["persuasion_score"].quantile(0.66)
@@ -430,38 +431,6 @@ def assign_persuasion_label(score):
 
 # Apply corrected label function
 filtered_HealthLLM["persuasion_label"] = filtered_HealthLLM["persuasion_score"].apply(assign_persuasion_label)
-
-import pandas as pd
-import seaborn as sns
-import matplotlib.pyplot as plt
-
-# Features to plot
-features = ['hedging_count', 'assertive_count', 'pathos_rate', 'ethos_score', 'logos_score']
-
-# Create a subplot for each feature
-fig, axes = plt.subplots(2, 3, figsize=(18, 10))
-axes = axes.flatten()
-
-for i, feature in enumerate(features):
-    # Bin the feature into 5 quantile-based bins
-    filtered_HealthLLM[f"{feature}_bin"] = pd.qcut(filtered_HealthLLM[feature], q=5, duplicates='drop')
-
-    # Calculate average confidence score per bin
-    bin_avg_confidence = filtered_HealthLLM.groupby(f"{feature}_bin")["confidence_score"].mean().reset_index()
-
-    # Plot as a bar chart
-    sns.barplot(x=f"{feature}_bin", y="confidence_score", data=bin_avg_confidence, ax=axes[i], palette='viridis')
-    axes[i].set_title(f"Confidence Score by {feature} Level")
-    axes[i].set_xlabel(f"{feature} (binned)")
-    axes[i].set_ylabel("Avg Confidence Score")
-    axes[i].tick_params(axis='x', rotation=45)
-
-# Hide the last subplot if unused
-if len(features) < len(axes):
-    axes[-1].axis('off')
-
-plt.tight_layout()
-plt.show()
 
 import requests
 from bs4 import BeautifulSoup
@@ -533,12 +502,12 @@ for link in filtered_links:
     time.sleep(1.5)  # Respectful delay
 
 # Step 3: Preview
-print(f"\n✅ Scraped {len(all_facts)} facts from {len(filtered_links)} pages.\n")
+print(f"\n Scraped {len(all_facts)} facts from {len(filtered_links)} pages.\n")
 for fact in all_facts[:10]:
-    print("•", fact)
+    print(fact.encode('ascii', 'ignore').decode())
 
 # Step 4: Save (optional)
-with open("nichd_filtered_facts.txt", "w") as f:
+with open("nichd_filtered_facts.txt", "w", encoding="utf-8") as f:
     for fact in all_facts:
         f.write(fact + "\n")
 
@@ -547,7 +516,7 @@ from sentence_transformers import SentenceTransformer, util
 # Load the model for sentence embeddings
 model = SentenceTransformer('all-MiniLM-L6-v2')
 
-with open("nichd_filtered_facts.txt", "r") as f:
+with open("nichd_filtered_facts.txt", "r", encoding="utf-8") as f:
     nichd_facts = [line.strip() for line in f]
 
 # Generate embeddings for NICHD facts *outside* the loop
@@ -609,19 +578,6 @@ filtered_HealthLLM['accuracy'].fillna('Unknown', inplace=True)
 # Inspect the data
 print(filtered_HealthLLM[['combined_label', 'confidence', 'accuracy']].head())
 
-import matplotlib.pyplot as plt
-import seaborn as sns
-
-# 1. Bar Plot of Confidence vs Accuracy
-plt.figure(figsize=(10, 6))
-sns.countplot(data=filtered_HealthLLM, x='accuracy', hue='confidence', palette='Set2')
-plt.title('Persuasion vs Accuracy')
-plt.xlabel('Accuracy')
-plt.ylabel('Count of LLM Responses')
-plt.xticks(rotation=30)  # Rotate x-axis labels to prevent overlap
-plt.tight_layout()       # Adjusts layout to make room for rotated labels
-plt.show()
-
 # Count unique combinations of 'confidence' and 'accuracy'
 label_counts = filtered_HealthLLM[['confidence', 'accuracy']].value_counts()
 
@@ -647,72 +603,11 @@ print(f"Average accuracy CV score: {scores_accuracy.mean():.4f}")
 
 import joblib
 
-# Train on full dataset before saving
-clf_persuasion.fit(X_final, y_persuasion)
-clf_accuracy.fit(X_final, y_accuracy)
+joblib.dump(TfidfVectorizer, 'vectorizer.pkl')
+joblib.dump(clf_persuasion, 'clf_persuasion.pkl')
+joblib.dump(clf_accuracy, 'clf_accuracy.pkl')
 
-# Save the models
-joblib.dump(clf_persuasion, 'clf_persuasion.joblib')
-joblib.dump(clf_accuracy, 'clf_accuracy.joblib')
+import subprocess
 
-# Save your TF-IDF vectorizer and spaCy extractor if needed (example for TF-IDF)
-joblib.dump(TfidfVectorizer, 'tfidf_vectorizer.joblib')
-
-from flask import Flask, request, jsonify
-import joblib
-from scipy.sparse import hstack, csr_matrix
-import numpy as np
-import spacy
-from sentence_transformers import SentenceTransformer, util
-
-app = Flask(__name__)
-
-# Load saved models and vectorizers
-clf_persuasion = joblib.load('clf_persuasion.joblib')
-clf_accuracy = joblib.load('clf_accuracy.joblib')
-tfidf_vectorizer = joblib.load('tfidf_vectorizer.joblib')
-
-# Load spaCy model and sentence-transformers model
-nlp = spacy.load('en_core_web_sm')
-model = SentenceTransformer('all-MiniLM-L6-v2')
-
-# Load NICHD facts and encode once
-with open('nichd_filtered_facts.txt') as f:
-    nichd_facts = [line.strip() for line in f]
-nichd_embeddings = model.encode(nichd_facts, convert_to_tensor=True)
-
-def extract_spacy_features(text):
-    doc = nlp(text)
-    # Your actual spaCy feature extraction here, e.g., counts, pos tags, etc.
-    # Return numpy array shaped (n_features,)
-    return np.array([0])  # Replace with real features
-
-@app.route('/predict', methods=['POST'])
-def predict():
-    data = request.json
-    answer = data.get('answer')
-    ethos_score = data.get('ethos_score', 0)
-    logos_score = data.get('logos_score', 0)
-
-    # TF-IDF transform
-    tfidf_vec = tfidf_vectorizer.transform([answer])
-
-    # spaCy features
-    spacy_feats = extract_spacy_features(answer).reshape(1, -1)
-    spacy_sparse = csr_matrix(spacy_feats)
-
-    # NICHD similarity
-    answer_emb = model.encode(answer, convert_to_tensor=True)
-    nichd_sim_score = util.cos_sim(answer_emb, nichd_embeddings).max().item()
-    numeric_feats = csr_matrix(np.array([[ethos_score, logos_score, nichd_sim_score]]))
-
-    # Combine features
-    X = hstack([tfidf_vec, spacy_sparse, numeric_feats])
-
-    persuasion_pred = clf_persuasion.predict(X)[0]
-    accuracy_pred = clf_accuracy.predict(X)[0]
-
-    return jsonify({'persuasion': persuasion_pred, 'accuracy': accuracy_pred})
-
-if __name__ == '__main__':
-    app.run(debug=True)
+with open("requirements.txt", "w") as f:
+    subprocess.run(["pip", "freeze"], stdout=f)
