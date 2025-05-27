@@ -1,10 +1,31 @@
+<!-- popup.html -->
 <!DOCTYPE html>
 <html>
-  <head><title>Confidence Analyzer</title></head>
-  <body>
-    <textarea id="text-input"></textarea>
-    <button id="predict-btn">Analyze</button>
-    <p id="output"></p>
+<head>
+    <title>AI Confidence Checker</title>
+    <meta charset="utf-8">
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css" rel="stylesheet">
+    <style>
+        body { width: 400px; padding: 10px; }
+        .status { font-weight: bold; }
+    </style>
+</head>
+<body>
+    <h4 class="text-center mb-3">When AI Lies With Confidence</h4>
+
+    <div class="form-group">
+        <label for="inputText">Paste AI-generated Response:</label>
+        <textarea class="form-control" id="inputText" rows="5"></textarea>
+    </div>
+
+    <button id="analyzeBtn" class="btn btn-primary mt-2 w-100">Analyze</button>
+
+    <div id="results" class="mt-3 d-none">
+        <p><strong>Confidence Level:</strong> <span id="confidenceLevel" class="status"></span></p>
+        <p><strong>Accuracy:</strong> <span id="accuracyLevel" class="status"></span></p>
+        <p><strong>Overall Judgment:</strong> <span id="finalLabel" class="status"></span></p>
+    </div>
+
     <script src="popup.js"></script>
-  </body>
+</body>
 </html>

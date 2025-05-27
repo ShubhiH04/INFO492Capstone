@@ -1,29 +1,30 @@
-document.querySelector("#predict-btn").addEventListener("click", async () => {
-  const input = document.querySelector("#text-input").value;
+document.addEventListener("DOMContentLoaded", function () {
+  const analyzeBtn = document.querySelector("#analyzeBtn");
+  if (analyzeBtn) {
+    analyzeBtn.addEventListener("click", () => {
+      const input = document.querySelector("#inputText").value;
 
-  try {
-    const response = await fetch("http://localhost:5000/predict", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json"
-      },
-      body: JSON.stringify({ text: input })
+      fetch("http://127.0.0.1:5000/predict", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({ text: input })
+      })
+        .then(response => response.json())
+        .then(data => {
+          console.log("Prediction response:", data);
+          document.querySelector("#confidenceLevel").textContent = data.confidence_label || "N/A";
+          document.querySelector("#accuracyLevel").textContent = data.prediction_label || "N/A";
+          document.querySelector("#finalLabel").textContent = data.combined_label || "N/A";
+          document.querySelector("#results").classList.remove("d-none");
+        })
+        .catch(error => {
+          alert("Error connecting to backend: " + error.message);
+          console.error("Fetch error:", error);
+        });
     });
-
-    const contentType = response.headers.get("content-type") || "";
-
-    if (contentType.includes("application/json")) {
-      // If response is JSON, parse it as JSON
-      const data = await response.json();
-      console.log("Parsed JSON:", data);
-      document.querySelector("#output").textContent = "Prediction: " + data.prediction;
-    } else {
-      // If not JSON, get raw text (likely an error page)
-      const text = await response.text();
-      console.error("Server returned non-JSON response:", text);
-      document.querySelector("#output").textContent = "Server error occurred — check console for details.";
-    }
-  } catch (err) {
-    document.querySelector("#output").textContent = "Something went wrong: " + err;
+  } else {
+    console.error("Button #analyzeBtn not found in the DOM.");
   }
 });
