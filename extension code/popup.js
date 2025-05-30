@@ -14,11 +14,15 @@ document.addEventListener("DOMContentLoaded", function () {
         .then(response => response.json())
         .then(data => {
           console.log("Prediction response:", data);
-          document.querySelector("#confidenceLevel").textContent = data.confidence_label || "N/A";
-          document.querySelector("#accuracyLevel").textContent = data.prediction_label || "N/A";
-          document.querySelector("#finalLabel").textContent = data.combined_label || "N/A";
+          // If your data is nested inside a 'result' key, do this:
+          const res = data.result || data;  // fallback to data if result doesn't exist
+
+          document.querySelector("#confidenceLevel").textContent = res.confidence_label || "N/A";
+          document.querySelector("#accuracyLevel").textContent = res.prediction_label || "N/A";
+          document.querySelector("#finalLabel").textContent = res.combined_label || "N/A";
           document.querySelector("#results").classList.remove("d-none");
         })
+
         .catch(error => {
           alert("Error connecting to backend: " + error.message);
           console.error("Fetch error:", error);

@@ -4,6 +4,7 @@ import spacy
 import pandas as pd
 import numpy as np
 from scipy.sparse import hstack
+from scipy.sparse import csr_matrix
 from sentence_transformers import SentenceTransformer, util
 import joblib  # for loading models
 import re
@@ -35,7 +36,7 @@ hedging_words = [
     "might", "could", "may", "can", "would",
     "possibly", "perhaps", "apparently", "seemingly", "likely",
     "conceivably", "presumably", "reportedly",
-    "suggest", "indicate", "appear", "seem", "imply", "speculate", "propose", "estimate",
+    "suggest", "indicate", "appear", "seem", "seems", "imply", "speculate", "propose", "estimate",
     "possible", "probable", "potential", "uncertain", "likely"
 ]
 
@@ -72,11 +73,34 @@ hedging_set = set(word.lower() for word in hedging)
 assertive_set = set(word.lower() for word in assertive)
 pathos_set = set(word.lower() for word in pathos)
 
+hedging_set = set(word.lower() for word in hedging)
+assertive_set = set(word.lower() for word in assertive)
+pathos_set = set(word.lower() for word in pathos)
+
+custom_hedging_set = set(word.lower() for word in hedging_words)
+custom_assertive_set = set(word.lower() for word in booster_words)
+custom_pathos_set = set(word.lower() for word in superlatives)
+
+# Remove overlaps so no duplicates between LIWC and custom sets
+custom_hedging_set -= hedging_set
+custom_assertive_set -= assertive_set
+custom_pathos_set -= pathos_set
+
+# Final combined sets to use in your feature extraction
+final_hedging = hedging_set.union(custom_hedging_set)
+final_assertive = assertive_set.union(custom_assertive_set)
+final_pathos = pathos_set.union(custom_pathos_set)
+
+
 # Your final sets
 final_hedging = hedging_set
 final_assertive = assertive_set
 final_pathos = pathos_set
 
+authority_list = [
+    "cdc", "who", "mayo clinic", "johns hopkins", "obstetrician", "gynecologist",
+    "dr", "doctor", "physician", "clinician", "acog", "health department", "nih"
+]
 
 app = Flask(__name__)
 CORS(app)
@@ -106,29 +130,96 @@ def count_liwc_words(doc):
         "word_count": len(doc)
     })
 
+def detect_authority(doc):
+    for ent in doc.ents:
+        if ent.label_ in ['ORG', 'PERSON'] and ent.text.lower() in authority_list:
+            return 1
+    return 0
+
+def detect_citation(doc):
+    text = doc.text.lower()
+    return int(bool(re.search(r'https?://', text) or re.search(r'(according to|published in|a study by)', text)))
+
+def detect_call_to_action(doc):
+    patterns = ['you should', 'consider', 'make sure to', 'talk to your doctor', 'schedule a visit']
+    return int(any(p in doc.text.lower() for p in patterns))
+
+def detect_structured_sentences(doc):
+    sents = list(doc.sents)
+    if not sents:
+        return 0
+    complete = sum(1 for sent in sents if any(tok.dep_ == 'nsubj' for tok in sent) and any(tok.dep_ == 'ROOT' for tok in sent))
+    return int(complete / len(sents) > 0.7)
+
 def compute_ethos_logos(doc):
-    # Return a pandas Series of ethos and logos scores
-    return pd.Series({'ethos_score': 0.03, 'logos_score': 0.04})
+    ethos = detect_authority(doc) + detect_citation(doc)
+    logos = detect_call_to_action(doc) + detect_structured_sentences(doc)
+    return pd.Series({
+        "ethos_score": ethos,
+        "logos_score": logos
+    })
 
 def extract_spacy_features(text):
-    # Return pandas Series of additional spaCy features
-    return pd.Series({'some_spacy_feature': 0.5})
+    doc = nlp(text)
+    liwc = count_liwc_words(doc)
+    rhetorical = compute_ethos_logos(doc)
+    return pd.concat([liwc, rhetorical], axis=0)
 
-def compute_confidence_score(features):
-    # Return a float confidence score based on your logic
-    return 0.75
+def compute_confidence_score(row, weights=None):
+    if row["word_count"] == 0:
+        return 0  # Avoid divide-by-zero
+    
+    if weights is None:
+        weights = {
+            "assertive_rate": 0.3,
+            "hedging_rate": -0.6
+        }
+    
+    # Basic weighted confidence score
+    score = (
+        weights["assertive_rate"] * row["assertive_count"] / row["word_count"] +
+        weights["hedging_rate"] * row["hedging_count"] / row["word_count"]
+    )
+    
+    # Flag cases where both assertive and hedging are high (conflict)
+    if row["assertive_count"] >= 3 and row["hedging_count"] >= 3:
+        score = 0.4  # downgrade to medium confidence
+    
+    return max(0, min(1, round(score, 3)))
 
-def compute_persuasion_score(features):
-    # Return a float persuasion score based on your logic
-    return 0.65
+def compute_persuasion_score(row, weights=None):
+    if weights is None:
+        weights = {
+            'confidence': 0.4,
+            'ethos': 0.2,
+            'logos': 0.2,
+            'pathos': 0.2
+        }
 
-def assign_confidence_label_combined(features):
-    # Return string label like 'High Confidence', 'Low Confidence'
-    return "High Confidence"
+    pathos_rate = row["pathos_count"] / row["word_count"] if row["word_count"] else 0
+
+    persuasion_score = (
+        weights['confidence'] * row['confidence_score'] +
+        weights['ethos'] * (row['ethos_score'] / 2) +
+        weights['logos'] * (row['logos_score'] / 2) +
+        weights['pathos'] * pathos_rate
+    )
+
+    return max(0, min(1, round(persuasion_score, 3)))
+
+def assign_confidence_label_combined(score):
+    # Debug print for tracking scores
+    print(f"Confidence score: {score}")
+    if score > 0.7:
+        return "High Confidence"
+    elif score < 0.4:
+        return "Low Confidence"
+    else:
+        return "Medium Confidence"
 
 def assign_persuasion_label(score):
-    # Return string label based on score thresholds
-    if score > 0.7:
+    print(f"Persuasion score: {score}")
+    if score > 0.6:
         return "High"
     elif score < 0.4:
         return "Low"
@@ -139,13 +230,15 @@ def get_combined_label(response, persuasion_label, ethos_rate, logos_rate):
     resp_embedding = model.encode(response, convert_to_tensor=True)
     cosine_scores = util.cos_sim(resp_embedding, nichd_embeddings)
     max_score = cosine_scores.max().item()
+    print(f"Max cosine similarity: {max_score}")
 
     if max_score < 0.4:
         accuracy_label = "Possible Misinformation"
-        if ethos_rate > 0.02 or logos_rate > 0.02:
+        # You can adjust this threshold if needed
+        if ethos_rate > 0.05 or logos_rate > 0.05:
             accuracy_label += " (but rhetorically persuasive)"
     elif max_score < 0.6:
-        accuracy_label = "Neutral / Unclear"
+        accuracy_label = "Unclear"
     else:
         accuracy_label = "Likely aligned with NICHD"
 
@@ -160,71 +253,79 @@ def get_combined_label(response, persuasion_label, ethos_rate, logos_rate):
 
 @app.route("/predict", methods=["POST"])
 def predict():
-    data = request.get_json(force=True)
-    text = data.get("text", "")
+    print("POST /predict called")
+    try:
+        data = request.get_json(force=True)
+        text = data.get("text", "")
 
-    # spaCy doc
-    doc = nlp(text)
+        doc = nlp(text)
 
-    # Extract features
-    liwc_feats = count_liwc_words(doc)
-    rhetorical_feats = compute_ethos_logos(doc)
-    spacy_feats = extract_spacy_features(text)
+        # Extract features once via extract_spacy_features (includes liwc + ethos/logos)
+        combined_feats = extract_spacy_features(text)
 
-    # Combine features into one vector/Series
-    combined_feats = pd.concat([liwc_feats, rhetorical_feats, spacy_feats])
-    combined_feats['pathos_rate'] = combined_feats['pathos_count'] / max(combined_feats['word_count'], 1)
+        # Add pathos_rate
+        combined_feats['pathos_rate'] = combined_feats['pathos_count'] / max(combined_feats['word_count'], 1)
 
-    # Number of expected total features by the model
-    expected_total_features = 1011
+        # Prepare TF-IDF features
+        tfidf_vector = vectorizer.transform([text])
+        num_tfidf_features = tfidf_vector.shape[1]
 
-    # TF-IDF vector
-    tfidf_vector = vectorizer.transform([text])
+        # Dense features array
+        dense_feats_array = combined_feats.values.reshape(1, -1)
+        expected_total_features = clf_persuasion.n_features_in_
+        num_dense_needed = expected_total_features - num_tfidf_features
 
-    # Number of features in TF-IDF
-    num_tfidf_features = tfidf_vector.shape[1]
+        # Pad or truncate dense features
+        if dense_feats_array.shape[1] < num_dense_needed:
+            pad_width = num_dense_needed - dense_feats_array.shape[1]
+            dense_feats_array = np.hstack([dense_feats_array, np.zeros((1, pad_width))])
+        elif dense_feats_array.shape[1] > num_dense_needed:
+            dense_feats_array = dense_feats_array[:, :num_dense_needed]
 
-    # How many dense features we need
-    num_dense_needed = expected_total_features - num_tfidf_features
+        # Final combined feature matrix
+        X = hstack([tfidf_vector, dense_feats_array])
 
-    # Current dense feature vector
-    dense_feats_array = combined_feats.values.reshape(1, -1)
+        # Model prediction
+        pred_label = clf_persuasion.predict(X)[0]
+        pred_proba = clf_persuasion.predict_proba(X).max()
 
-    # If not enough, pad with zeros
-    if dense_feats_array.shape[1] < num_dense_needed:
-        pad_width = num_dense_needed - dense_feats_array.shape[1]
-        dense_feats_array = np.hstack([dense_feats_array, np.zeros((1, pad_width))])
-    elif dense_feats_array.shape[1] > num_dense_needed:
-        # Truncate if too many
-        dense_feats_array = dense_feats_array[:, :num_dense_needed]
+        # Compute scores and labels
+        confidence_score = compute_confidence_score(combined_feats)
+        combined_feats["confidence_score"] = confidence_score
+        
+        persuasion_score = compute_persuasion_score(combined_feats)
+        confidence_label = assign_confidence_label_combined(confidence_score)
+        persuasion_label = assign_persuasion_label(persuasion_score)
 
-    # Combine features
-    X = hstack([tfidf_vector, dense_feats_array])
+        combined_label = get_combined_label(
+            response=text,
+            persuasion_label=persuasion_label,
+            ethos_rate=combined_feats['ethos_score'],
+            logos_rate=combined_feats['logos_score']
+        )
 
-    # Predict label and probabilities with RF model
-    pred_label = clf_persuasion.predict(X)[0]
-    pred_proba = clf_persuasion.predict_proba(X).max()
+        print("Assertive count:", combined_feats["assertive_count"])
+        print("Hedging count:", combined_feats["hedging_count"])
+        print("Word count:", combined_feats["word_count"])
+        print("Confidence score:", confidence_score)
+        print("Max cosine similarity to NICHD facts:", max_score)
 
-    # Compute your confidence and persuasion scores
-    confidence_score = compute_confidence_score(combined_feats)
-    persuasion_score = compute_persuasion_score(combined_feats)
+        return jsonify({
+            "prediction_label": pred_label,
+            "prediction_probability": round(pred_proba, 3),
+            "confidence_score": confidence_score,
+            "confidence_label": confidence_label,
+            "persuasion_score": persuasion_score,
+            "persuasion_label": persuasion_label,
+            "combined_label": combined_label,
+            "assertive_rate": round(combined_feats["assertive_count"] / combined_feats["word_count"], 3),
+            "hedging_rate": round(combined_feats["hedging_count"] / combined_feats["word_count"], 3)
+        })
 
-    # Assign custom labels
-    confidence_label = assign_confidence_label_combined(combined_feats)
-    persuasion_label = assign_persuasion_label(persuasion_score)
+    except Exception as e:
+        import traceback
+        print(f"Error in /predict: {e}")
+        traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
 
-    # Get combined semantic + rhetorical label
-    combined_label = get_combined_label(text, persuasion_label, combined_feats['ethos_score'], combined_feats['logos_score'])
 
-    # Return JSON response
-    return jsonify({
-        "prediction_label": pred_label,
-        "confidence_score": confidence_score,
-        "confidence_label": confidence_label,
-        "persuasion_score": persuasion_score,
-        "persuasion_label": persuasion_label,
-        "combined_label": combined_label
-    })
-
-if __name__ == "__main__":
-    app.run(debug=True)

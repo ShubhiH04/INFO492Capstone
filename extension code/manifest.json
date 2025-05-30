@@ -1,6 +1,6 @@
 {
   "manifest_version": 3,
-  "name": "Confidence Analyzer",
+  "name": "Confidence and Accuracy Analyzer",
   "version": "1.0",
   "permissions": [],
   "host_permissions": [
